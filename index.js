@@ -79,7 +79,7 @@ async function getFacts(chatId) {
     [chatId]
   );
 
-  return result.rows.map(r => `- ${r.fact}`).join("\n");
+  return result.rows.map(row => `- ${row.fact}`).join("\n");
 }
 
 async function askSardor(chatId) {
@@ -88,10 +88,7 @@ async function askSardor(chatId) {
   const messages = [
     {
       role: "system",
-      content: `${systemPrompt}
-
-Долговременная память:
-${facts || "Пока пусто."}`
+      content: `${systemPrompt}\n\nДолговременная память:\n${facts || "Пока пусто."}`
     },
     ...(shortMemory[chatId] || [])
   ];
@@ -120,39 +117,45 @@ ${facts || "Пока пусто."}`
   return data.choices?.[0]?.message?.content || "Не поймал мысль. Повтори.";
 }
 
+async function sendText(chatId, text) {
+  await bot.sendMessage(chatId, text, {
+    disable_notification: false
+  });
+}
+
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   await ensureUser(chatId);
-  await bot.sendMessage(chatId, "Я Сардор. Пиши нормально, без церемоний. Разберемся.");
+  await sendText(chatId, "Я Сардор. Пиши нормально, без церемоний. Разберемся.");
 });
 
 bot.onText(/\/proactive_on/, async (msg) => {
   await ensureUser(msg.chat.id);
   await db.query("UPDATE users SET proactive_enabled = true WHERE chat_id = $1", [msg.chat.id]);
-  await bot.sendMessage(msg.chat.id, "Буду иногда писать сам.");
+  await sendText(msg.chat.id, "Буду иногда писать сам.");
 });
 
 bot.onText(/\/proactive_off/, async (msg) => {
   await ensureUser(msg.chat.id);
   await db.query("UPDATE users SET proactive_enabled = false WHERE chat_id = $1", [msg.chat.id]);
-  await bot.sendMessage(msg.chat.id, "Сам писать не буду.");
+  await sendText(msg.chat.id, "Сам писать не буду.");
 });
 
 bot.onText(/\/remember (.+)/, async (msg, match) => {
   await ensureUser(msg.chat.id);
   await db.query("INSERT INTO memories (chat_id, fact) VALUES ($1, $2)", [msg.chat.id, match[1]]);
-  await bot.sendMessage(msg.chat.id, "Запомнил.");
+  await sendText(msg.chat.id, "Запомнил.");
 });
 
 bot.onText(/\/memory/, async (msg) => {
   await ensureUser(msg.chat.id);
   const facts = await getFacts(msg.chat.id);
-  await bot.sendMessage(msg.chat.id, facts ? `Вот что помню:\n${facts}` : "Пока ничего не помню.");
+  await sendText(msg.chat.id, facts ? `Вот что помню:\n${facts}` : "Пока ничего не помню.");
 });
 
 bot.onText(/\/reset/, async (msg) => {
   shortMemory[msg.chat.id] = [];
-  await bot.sendMessage(msg.chat.id, "Краткую память очистил.");
+  await sendText(msg.chat.id, "Краткую память очистил.");
 });
 
 bot.onText(/\/napishi (\d+)/, async (msg, match) => {
@@ -160,17 +163,17 @@ bot.onText(/\/napishi (\d+)/, async (msg, match) => {
   const seconds = Number(match[1]);
 
   if (!seconds || seconds < 1) {
-    await bot.sendMessage(chatId, "Напиши нормально. Например: /napishi 10");
+    await sendText(chatId, "Напиши нормально. Например: /napishi 10");
     return;
   }
 
-  await bot.sendMessage(chatId, `Хорошо. Напишу через ${seconds} секунд.`);
+  await sendText(chatId, `Хорошо. Напишу через ${seconds} секунд.`);
 
   setTimeout(async () => {
-    await bot.sendMessage(chatId, "Что делаешь?");
+    await sendText(chatId, "Что делаешь?");
 
     setTimeout(async () => {
-      await bot.sendMessage(chatId, "Давай поболтаем.");
+      await sendText(chatId, "Давай поболтаем.");
     }, 2000);
   }, seconds * 1000);
 });
@@ -183,7 +186,6 @@ bot.on("message", async (msg) => {
   if (text.startsWith("/")) return;
 
   await ensureUser(chatId);
-
   saveShortMemory(chatId, "user", text);
 
   try {
@@ -192,11 +194,10 @@ bot.on("message", async (msg) => {
     const reply = await askSardor(chatId);
 
     saveShortMemory(chatId, "assistant", reply);
-
-    await bot.sendMessage(chatId, reply);
+    await sendText(chatId, reply);
   } catch (error) {
     console.error(error);
-    await bot.sendMessage(chatId, "Сейчас не отвечу. Что-то легло на стороне модели.");
+    await sendText(chatId, "Сейчас не отвечу. Что-то легло на стороне модели.");
   }
 });
 
@@ -213,7 +214,6 @@ async function sendProactiveMessages() {
 
   for (const user of users.rows) {
     const chatId = user.chat_id;
-
     const today = new Date().toISOString().slice(0, 10);
     const savedDate = user.proactive_date?.toISOString?.().slice(0, 10) || today;
 
@@ -244,10 +244,10 @@ async function sendProactiveMessages() {
 
     const text = phrases[Math.floor(Math.random() * phrases.length)];
 
-    await bot.sendMessage(chatId, text);
+    await sendText(chatId, text);
 
     await db.query(
-      `UPDATE users 
+      `UPDATE users
        SET proactive_count = proactive_count + 1, last_proactive_at = NOW()
        WHERE chat_id = $1`,
       [chatId]
@@ -257,4 +257,4 @@ async function sendProactiveMessages() {
 
 setInterval(sendProactiveMessages, 60 * 60 * 1000);
 
-console.log("Сардор запущен без голосовых");
+console.log("Сардор v2 запущен без голосовых");

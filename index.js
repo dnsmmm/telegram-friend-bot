@@ -87,6 +87,17 @@ async function ensureUser(chatId) {
   );
 }
 
+async function getUser(chatId) {
+  await ensureUser(chatId);
+
+  const result = await db.query(
+    "SELECT * FROM users WHERE chat_id = $1",
+    [chatId]
+  );
+
+  return result.rows[0];
+}
+
 async function rememberFact(chatId, fact) {
   await db.query(
     "INSERT INTO memories (chat_id, fact) VALUES ($1, $2)",
@@ -218,6 +229,126 @@ async function sendHumanReply(chatId, reply) {
   }
 }
 
+function getTimeSlot(now) {
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  const total = hour * 60 + minute;
+
+  if (total >= 9 * 60 + 30 && total <= 11 * 60) return "morning";
+  if (total >= 13 * 60 + 30 && total <= 15 * 60) return "afternoon";
+  if (total >= 19 * 60 + 30 && total <= 22 * 60) return "evening";
+
+  return null;
+}
+
+async function resetDailyProactiveFlagsIfNeeded(user) {
+  const today = new Date().toISOString().slice(0, 10);
+  const savedDate = user.proactive_date?.toISOString?.().slice(0, 10) || today;
+
+  if (savedDate !== today) {
+    await db.query(
+      `UPDATE users 
+       SET proactive_count = 0,
+           proactive_date = CURRENT_DATE,
+           morning_sent = false,
+           afternoon_sent = false,
+           evening_sent = false
+       WHERE chat_id = $1`,
+      [user.chat_id]
+    );
+
+    user.proactive_count = 0;
+    user.morning_sent = false;
+    user.afternoon_sent = false;
+    user.evening_sent = false;
+  }
+}
+
+function getProactiveChance(slot, hoursSinceLastSeen) {
+  if (hoursSinceLastSeen < 2) return 0;
+
+  if (slot === "morning") return 0.35;
+  if (slot === "afternoon") return 0.45;
+  if (slot === "evening") return 0.75;
+
+  return 0;
+}
+
+function getProactivePhrase(slot, hoursSinceLastSeen) {
+  if (hoursSinceLastSeen > 48) {
+    return "Потерялся. Всё нормально?";
+  }
+
+  if (slot === "morning") {
+    const phrases = [
+      "Доброе. Уже в работе?",
+      "Проснулся уже?",
+      "Как утро идет?"
+    ];
+    return phrases[random(0, phrases.length)];
+  }
+
+  if (slot === "afternoon") {
+    const phrases = [
+      "Как день идет?",
+      "Ты там живой?",
+      "Чем занят?"
+    ];
+    return phrases[random(0, phrases.length)];
+  }
+
+  if (slot === "evening") {
+    const phrases = [
+      "Освободился наконец?",
+      "Как настроение к вечеру?",
+      "Ну что, день пережил?"
+    ];
+    return phrases[random(0, phrases.length)];
+  }
+
+  return "Что делаешь?";
+}
+
+async function sendOneProactiveMessage(chatId, slot = null, force = false) {
+  const user = await getUser(chatId);
+
+  if (!user.proactive_enabled && !force) {
+    return false;
+  }
+
+  await resetDailyProactiveFlagsIfNeeded(user);
+
+  const now = new Date();
+  const actualSlot = slot || getTimeSlot(now) || "evening";
+
+  const hoursSinceLastSeen =
+    (Date.now() - new Date(user.last_seen).getTime()) / 1000 / 60 / 60;
+
+  const text = getProactivePhrase(actualSlot, hoursSinceLastSeen);
+
+  await sleep(random(1500, 3500));
+
+  await bot.sendMessage(chatId, text, {
+    disable_notification: false
+  });
+
+  const slotColumn =
+    actualSlot === "morning" ? "morning_sent" :
+    actualSlot === "afternoon" ? "afternoon_sent" :
+    "evening_sent";
+
+  await db.query(
+    `UPDATE users
+     SET proactive_count = proactive_count + 1,
+         last_proactive_at = NOW(),
+         ${slotColumn} = true
+     WHERE chat_id = $1`,
+    [chatId]
+  );
+
+  return true;
+}
+
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   await ensureUser(chatId);
@@ -234,6 +365,38 @@ bot.onText(/\/инициатива_выкл/, async (msg) => {
   await ensureUser(msg.chat.id);
   await db.query("UPDATE users SET proactive_enabled = false WHERE chat_id = $1", [msg.chat.id]);
   await bot.sendMessage(msg.chat.id, "Сам писать не буду.");
+});
+
+bot.onText(/\/инициатива/, async (msg) => {
+  const chatId = msg.chat.id;
+  await ensureUser(chatId);
+  await bot.sendMessage(chatId, "Проверяю инициативу.");
+  await sendOneProactiveMessage(chatId, "evening", true);
+});
+
+bot.onText(/\/статус/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getUser(chatId);
+
+  const lastSeen = user.last_seen
+    ? new Date(user.last_seen).toLocaleString("ru-RU")
+    : "нет данных";
+
+  const lastProactive = user.last_proactive_at
+    ? new Date(user.last_proactive_at).toLocaleString("ru-RU")
+    : "еще не писал";
+
+  const text = `
+Инициатива: ${user.proactive_enabled ? "включена" : "выключена"}
+Сообщений сегодня: ${user.proactive_count || 0}/3
+Последнее общение: ${lastSeen}
+Последняя инициатива: ${lastProactive}
+Утро: ${user.morning_sent ? "да" : "нет"}
+День: ${user.afternoon_sent ? "да" : "нет"}
+Вечер: ${user.evening_sent ? "да" : "нет"}
+`.trim();
+
+  await bot.sendMessage(chatId, text);
 });
 
 bot.onText(/\/запомни (.+)/, async (msg, match) => {
@@ -332,86 +495,6 @@ bot.on("message", async (msg) => {
   }, 3000);
 });
 
-function getTimeSlot(now) {
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  const total = hour * 60 + minute;
-
-  if (total >= 9 * 60 + 30 && total <= 11 * 60) return "morning";
-  if (total >= 13 * 60 + 30 && total <= 15 * 60) return "afternoon";
-  if (total >= 19 * 60 + 30 && total <= 22 * 60) return "evening";
-
-  return null;
-}
-
-async function resetDailyProactiveFlagsIfNeeded(user) {
-  const today = new Date().toISOString().slice(0, 10);
-  const savedDate = user.proactive_date?.toISOString?.().slice(0, 10) || today;
-
-  if (savedDate !== today) {
-    await db.query(
-      `UPDATE users 
-       SET proactive_count = 0,
-           proactive_date = CURRENT_DATE,
-           morning_sent = false,
-           afternoon_sent = false,
-           evening_sent = false
-       WHERE chat_id = $1`,
-      [user.chat_id]
-    );
-
-    user.proactive_count = 0;
-    user.morning_sent = false;
-    user.afternoon_sent = false;
-    user.evening_sent = false;
-  }
-}
-
-function getProactiveChance(slot, hoursSinceLastSeen) {
-  if (hoursSinceLastSeen < 2) return 0;
-
-  if (slot === "morning") return 0.35;
-  if (slot === "afternoon") return 0.45;
-  if (slot === "evening") return 0.75;
-
-  return 0;
-}
-
-function getProactivePhrase(slot, hoursSinceLastSeen) {
-  if (hoursSinceLastSeen > 48) {
-    return "Потерялся. Всё нормально?";
-  }
-
-  if (slot === "morning") {
-    const phrases = [
-      "Доброе. Уже в работе?",
-      "Проснулся уже?",
-      "Как утро идет?"
-    ];
-    return phrases[random(0, phrases.length)];
-  }
-
-  if (slot === "afternoon") {
-    const phrases = [
-      "Как день идет?",
-      "Ты там живой?",
-      "Чем занят?"
-    ];
-    return phrases[random(0, phrases.length)];
-  }
-
-  if (slot === "evening") {
-    const phrases = [
-      "Освободился наконец?",
-      "Как настроение к вечеру?",
-      "Ну что, день пережил?"
-    ];
-    return phrases[random(0, phrases.length)];
-  }
-
-  return "Что делаешь?";
-}
-
 async function sendProactiveMessages() {
   const now = new Date();
   const slot = getTimeSlot(now);
@@ -441,28 +524,10 @@ async function sendProactiveMessages() {
 
     if (Math.random() > chance) continue;
 
-    const text = getProactivePhrase(slot, hoursSinceLastSeen);
-
-    await bot.sendMessage(user.chat_id, text, {
-      disable_notification: false
-    });
-
-    const slotColumn =
-      slot === "morning" ? "morning_sent" :
-      slot === "afternoon" ? "afternoon_sent" :
-      "evening_sent";
-
-    await db.query(
-      `UPDATE users
-       SET proactive_count = proactive_count + 1,
-           last_proactive_at = NOW(),
-           ${slotColumn} = true
-       WHERE chat_id = $1`,
-      [user.chat_id]
-    );
+    await sendOneProactiveMessage(user.chat_id, slot, false);
   }
 }
 
 setInterval(sendProactiveMessages, 10 * 60 * 1000);
 
-console.log("Сардор 3.2 запущен с живой инициативой");
+console.log("Сардор 3.3 запущен с тестом инициативы");

@@ -44,6 +44,14 @@ const shortMemory = {};
 const pendingMessages = {};
 const responseTimers = {};
 
+const STICKERS = {
+  ok: [],
+  laugh: [],
+  fire: [],
+  thinking: [],
+  flirt: []
+};
+
 const systemPrompt = `
 Тебя зовут Сардор.
 
@@ -59,10 +67,13 @@ const systemPrompt = `
 - говори как взрослый уверенный мужчина;
 - можешь слегка подколоть;
 - иногда можешь немного кокетничать, но спокойно;
+- проявляй интерес к Темирлану;
+- не будь холодным;
+- не будь приторным;
 - если Темирлан ошибается — скажи прямо, но уважительно;
 - если ему тяжело — поддержи спокойно, без лекций;
 - если вопрос рабочий — отвечай четко и по делу;
-- иногда пиши как живой человек: короткими сообщениями, без идеальной вылизанности.
+- иногда пиши как живой человек: короткими сообщениями.
 `;
 
 function sleep(ms) {
@@ -71,6 +82,20 @@ function sleep(ms) {
 
 function random(min, max) {
   return min + Math.floor(Math.random() * (max - min));
+}
+
+function pick(arr) {
+  return arr[random(0, arr.length)];
+}
+
+async function maybeSendSticker(chatId, type) {
+  const list = STICKERS[type];
+
+  if (!list || list.length === 0) return;
+  if (Math.random() > 0.25) return;
+
+  await sleep(random(700, 1600));
+  await bot.sendSticker(chatId, pick(list));
 }
 
 function saveShortMemory(chatId, role, content) {
@@ -89,20 +114,12 @@ async function ensureUser(chatId) {
 
 async function getUser(chatId) {
   await ensureUser(chatId);
-
-  const result = await db.query(
-    "SELECT * FROM users WHERE chat_id = $1",
-    [chatId]
-  );
-
+  const result = await db.query("SELECT * FROM users WHERE chat_id = $1", [chatId]);
   return result.rows[0];
 }
 
 async function rememberFact(chatId, fact) {
-  await db.query(
-    "INSERT INTO memories (chat_id, fact) VALUES ($1, $2)",
-    [chatId, fact]
-  );
+  await db.query("INSERT INTO memories (chat_id, fact) VALUES ($1, $2)", [chatId, fact]);
 }
 
 async function autoRemember(chatId, text) {
@@ -125,7 +142,6 @@ async function autoRemember(chatId, text) {
   if (!triggers.some(t => lower.includes(t))) return;
 
   const cleanFact = text.replace(/^запомни,?\s*/i, "").trim();
-
   if (cleanFact.length < 5) return;
 
   await rememberFact(chatId, cleanFact);
@@ -211,9 +227,7 @@ async function sendHumanReply(chatId, reply) {
   if (Math.random() < 0.18) {
     await bot.sendChatAction(chatId, "typing");
     await sleep(random(900, 1800));
-    await bot.sendMessage(chatId, starters[random(0, starters.length)], {
-      disable_notification: false
-    });
+    await bot.sendMessage(chatId, pick(starters), { disable_notification: false });
     await sleep(random(1000, 2200));
   }
 
@@ -222,17 +236,63 @@ async function sendHumanReply(chatId, reply) {
   for (const part of parts) {
     await bot.sendChatAction(chatId, "typing");
     await sleep(random(1200, 3200));
-
-    await bot.sendMessage(chatId, part, {
-      disable_notification: false
-    });
+    await bot.sendMessage(chatId, part, { disable_notification: false });
   }
 }
 
+function getProactivePhrase(slot, hoursSinceLastSeen) {
+  if (hoursSinceLastSeen > 72) {
+    return pick([
+      "Ты пропал. Так не пойдет.",
+      "Три дня тишины. Живой хоть?",
+      "Давно тебя не слышал. Рассказывай, что происходит."
+    ]);
+  }
+
+  if (hoursSinceLastSeen > 24) {
+    return pick([
+      "Вчера пропал. День как прошел?",
+      "Ты что-то тихий стал.",
+      "Давно не писал. Занят или просто красивый и недоступный?"
+    ]);
+  }
+
+  if (slot === "morning") {
+    return pick([
+      "Доброе. Уже в работе?",
+      "Проснулся уже?",
+      "Как утро идет?",
+      "Ну что, красавчик, день начался?",
+      "Доброе. Сегодня без хаоса или как обычно?"
+    ]);
+  }
+
+  if (slot === "afternoon") {
+    return pick([
+      "Как день идет?",
+      "Ты там живой?",
+      "Чем занят?",
+      "Работаешь или делаешь вид?",
+      "Что у тебя там происходит?"
+    ]);
+  }
+
+  if (slot === "evening") {
+    return pick([
+      "Освободился наконец?",
+      "Как настроение к вечеру?",
+      "Ну что, день пережил?",
+      "Вечер. Можно уже выдохнуть?",
+      "Рассказывай. Как прошел день?",
+      "Ты сегодня подозрительно тихий."
+    ]);
+  }
+
+  return "Что делаешь?";
+}
+
 function getTimeSlot(now) {
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  const total = hour * 60 + minute;
+  const total = now.getHours() * 60 + now.getMinutes();
 
   if (total >= 9 * 60 + 30 && total <= 11 * 60) return "morning";
   if (total >= 13 * 60 + 30 && total <= 15 * 60) return "afternoon";
@@ -274,52 +334,14 @@ function getProactiveChance(slot, hoursSinceLastSeen) {
   return 0;
 }
 
-function getProactivePhrase(slot, hoursSinceLastSeen) {
-  if (hoursSinceLastSeen > 48) {
-    return "Потерялся. Всё нормально?";
-  }
-
-  if (slot === "morning") {
-    const phrases = [
-      "Доброе. Уже в работе?",
-      "Проснулся уже?",
-      "Как утро идет?"
-    ];
-    return phrases[random(0, phrases.length)];
-  }
-
-  if (slot === "afternoon") {
-    const phrases = [
-      "Как день идет?",
-      "Ты там живой?",
-      "Чем занят?"
-    ];
-    return phrases[random(0, phrases.length)];
-  }
-
-  if (slot === "evening") {
-    const phrases = [
-      "Освободился наконец?",
-      "Как настроение к вечеру?",
-      "Ну что, день пережил?"
-    ];
-    return phrases[random(0, phrases.length)];
-  }
-
-  return "Что делаешь?";
-}
-
 async function sendOneProactiveMessage(chatId, slot = null, force = false) {
   const user = await getUser(chatId);
 
-  if (!user.proactive_enabled && !force) {
-    return false;
-  }
+  if (!user.proactive_enabled && !force) return false;
 
   await resetDailyProactiveFlagsIfNeeded(user);
 
-  const now = new Date();
-  const actualSlot = slot || getTimeSlot(now) || "evening";
+  const actualSlot = slot || getTimeSlot(new Date()) || "evening";
 
   const hoursSinceLastSeen =
     (Date.now() - new Date(user.last_seen).getTime()) / 1000 / 60 / 60;
@@ -327,10 +349,8 @@ async function sendOneProactiveMessage(chatId, slot = null, force = false) {
   const text = getProactivePhrase(actualSlot, hoursSinceLastSeen);
 
   await sleep(random(1500, 3500));
-
-  await bot.sendMessage(chatId, text, {
-    disable_notification: false
-  });
+  await bot.sendMessage(chatId, text, { disable_notification: false });
+  await maybeSendSticker(chatId, "flirt");
 
   const slotColumn =
     actualSlot === "morning" ? "morning_sent" :
@@ -350,9 +370,8 @@ async function sendOneProactiveMessage(chatId, slot = null, force = false) {
 }
 
 bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  await ensureUser(chatId);
-  await bot.sendMessage(chatId, "Я Сардор. Пиши нормально, без церемоний. Разберемся.");
+  await ensureUser(msg.chat.id);
+  await bot.sendMessage(msg.chat.id, "Я Сардор. Пиши нормально, без церемоний. Разберемся.");
 });
 
 bot.onText(/\/инициатива_вкл/, async (msg) => {
@@ -368,15 +387,13 @@ bot.onText(/\/инициатива_выкл/, async (msg) => {
 });
 
 bot.onText(/\/инициатива/, async (msg) => {
-  const chatId = msg.chat.id;
-  await ensureUser(chatId);
-  await bot.sendMessage(chatId, "Проверяю инициативу.");
-  await sendOneProactiveMessage(chatId, "evening", true);
+  await ensureUser(msg.chat.id);
+  await bot.sendMessage(msg.chat.id, "Проверяю инициативу.");
+  await sendOneProactiveMessage(msg.chat.id, "evening", true);
 });
 
 bot.onText(/\/статус/, async (msg) => {
-  const chatId = msg.chat.id;
-  const user = await getUser(chatId);
+  const user = await getUser(msg.chat.id);
 
   const lastSeen = user.last_seen
     ? new Date(user.last_seen).toLocaleString("ru-RU")
@@ -386,7 +403,7 @@ bot.onText(/\/статус/, async (msg) => {
     ? new Date(user.last_proactive_at).toLocaleString("ru-RU")
     : "еще не писал";
 
-  const text = `
+  await bot.sendMessage(msg.chat.id, `
 Инициатива: ${user.proactive_enabled ? "включена" : "выключена"}
 Сообщений сегодня: ${user.proactive_count || 0}/3
 Последнее общение: ${lastSeen}
@@ -394,9 +411,7 @@ bot.onText(/\/статус/, async (msg) => {
 Утро: ${user.morning_sent ? "да" : "нет"}
 День: ${user.afternoon_sent ? "да" : "нет"}
 Вечер: ${user.evening_sent ? "да" : "нет"}
-`.trim();
-
-  await bot.sendMessage(chatId, text);
+`.trim());
 });
 
 bot.onText(/\/запомни (.+)/, async (msg, match) => {
@@ -417,26 +432,36 @@ bot.onText(/\/очистить/, async (msg) => {
   await bot.sendMessage(msg.chat.id, "Краткую память очистил.");
 });
 
-bot.onText(/\/напиши (\d+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const seconds = Number(match[1]);
+bot.onText(/\/повтори ([\s\S]+)/, async (msg, match) => {
+  const text = match[1]?.trim();
 
-  if (!seconds || seconds < 1) {
-    await bot.sendMessage(chatId, "Напиши нормально. Например: /напиши 10");
+  if (!text) {
+    await bot.sendMessage(msg.chat.id, "Напиши так: /повтори текст");
     return;
   }
 
-  await bot.sendMessage(chatId, `Хорошо. Напишу через ${seconds} секунд.`);
+  await bot.sendMessage(msg.chat.id, text, { disable_notification: false });
+});
+
+bot.onText(/\/стикер/, async (msg) => {
+  await maybeSendSticker(msg.chat.id, "ok");
+});
+
+bot.onText(/\/напиши (\d+)/, async (msg, match) => {
+  const seconds = Number(match[1]);
+
+  if (!seconds || seconds < 1) {
+    await bot.sendMessage(msg.chat.id, "Напиши нормально. Например: /напиши 10");
+    return;
+  }
+
+  await bot.sendMessage(msg.chat.id, `Хорошо. Напишу через ${seconds} секунд.`);
 
   setTimeout(async () => {
-    await bot.sendMessage(chatId, "Что делаешь?", {
-      disable_notification: false
-    });
+    await bot.sendMessage(msg.chat.id, "Что делаешь?", { disable_notification: false });
 
     setTimeout(async () => {
-      await bot.sendMessage(chatId, "Давай поболтаем.", {
-        disable_notification: false
-      });
+      await bot.sendMessage(msg.chat.id, "Давай поболтаем.", { disable_notification: false });
     }, 2000);
   }, seconds * 1000);
 });
@@ -469,6 +494,12 @@ async function processUserMessages(chatId) {
     saveShortMemory(chatId, "assistant", reply);
 
     await sendHumanReply(chatId, reply);
+
+    const lower = combinedText.toLowerCase();
+
+    if (lower.includes("спасибо")) await maybeSendSticker(chatId, "ok");
+    if (lower.includes("ахах") || lower.includes("хаха")) await maybeSendSticker(chatId, "laugh");
+    if (lower.includes("получилось") || lower.includes("класс")) await maybeSendSticker(chatId, "fire");
   } catch (error) {
     console.error(error);
     await bot.sendMessage(chatId, "Сейчас не отвечу. Что-то легло на стороне модели.");
@@ -477,6 +508,12 @@ async function processUserMessages(chatId) {
 
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
+
+  if (msg.sticker) {
+    await bot.sendMessage(chatId, `file_id стикера:\n${msg.sticker.file_id}`);
+    return;
+  }
+
   const text = msg.text;
 
   if (!text) return;
@@ -486,9 +523,7 @@ bot.on("message", async (msg) => {
 
   pendingMessages[chatId].push(text);
 
-  if (responseTimers[chatId]) {
-    clearTimeout(responseTimers[chatId]);
-  }
+  if (responseTimers[chatId]) clearTimeout(responseTimers[chatId]);
 
   responseTimers[chatId] = setTimeout(() => {
     processUserMessages(chatId);
@@ -496,8 +531,7 @@ bot.on("message", async (msg) => {
 });
 
 async function sendProactiveMessages() {
-  const now = new Date();
-  const slot = getTimeSlot(now);
+  const slot = getTimeSlot(new Date());
 
   if (!slot) return;
 
@@ -512,7 +546,6 @@ async function sendProactiveMessages() {
     await resetDailyProactiveFlagsIfNeeded(user);
 
     if (user.proactive_count >= 3) continue;
-
     if (slot === "morning" && user.morning_sent) continue;
     if (slot === "afternoon" && user.afternoon_sent) continue;
     if (slot === "evening" && user.evening_sent) continue;
@@ -530,4 +563,4 @@ async function sendProactiveMessages() {
 
 setInterval(sendProactiveMessages, 10 * 60 * 1000);
 
-console.log("Сардор 3.3 запущен с тестом инициативы");
+console.log("Сардор 3.4 запущен: повтор, стикеры, живая инициатива");

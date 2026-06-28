@@ -1,6 +1,5 @@
 import TelegramBot from "node-telegram-bot-api";
 import pg from "pg";
-import googleTTS from "google-tts-api";
 
 const { Pool } = pg;
 
@@ -23,7 +22,6 @@ const db = new Pool({
 await db.query(`
 CREATE TABLE IF NOT EXISTS users (
   chat_id BIGINT PRIMARY KEY,
-  voice_enabled BOOLEAN DEFAULT true,
   proactive_enabled BOOLEAN DEFAULT true,
   last_seen TIMESTAMP DEFAULT NOW(),
   last_proactive_at TIMESTAMP,
@@ -57,7 +55,8 @@ const systemPrompt = `
 - можешь слегка подколоть;
 - иногда можешь немного кокетничать, но спокойно;
 - если Темирлан ошибается — скажи прямо, но уважительно;
-- если ему тяжело — поддержи спокойно, без лекций.
+- если ему тяжело — поддержи спокойно, без лекций;
+- если вопрос рабочий — отвечай четко и по делу.
 `;
 
 function saveShortMemory(chatId, role, content) {
@@ -83,7 +82,7 @@ async function getFacts(chatId) {
   return result.rows.map(r => `- ${r.fact}`).join("\n");
 }
 
-async function askSardor(chatId, userText = null) {
+async function askSardor(chatId) {
   const facts = await getFacts(chatId);
 
   const messages = [
@@ -96,10 +95,6 @@ ${facts || "Пока пусто."}`
     },
     ...(shortMemory[chatId] || [])
   ];
-
-  if (userText) {
-    messages.push({ role: "user", content: userText });
-  }
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -125,48 +120,11 @@ ${facts || "Пока пусто."}`
   return data.choices?.[0]?.message?.content || "Не поймал мысль. Повтори.";
 }
 
-async function sendSardorReply(chatId, text) {
-  const user = await db.query("SELECT voice_enabled FROM users WHERE chat_id = $1", [chatId]);
-  const voiceEnabled = user.rows[0]?.voice_enabled ?? true;
-
-  if (!voiceEnabled) {
-    await bot.sendMessage(chatId, text);
-    return;
-  }
-
-  try {
-    const shortText = text.length > 180 ? text.slice(0, 180) : text;
-
-    const url = googleTTS.getAudioUrl(shortText, {
-      lang: "ru",
-      slow: false,
-      host: "https://translate.google.com"
-    });
-
-    await bot.sendVoice(chatId, url);
-  } catch (error) {
-    console.error("Voice error:", error);
-    await bot.sendMessage(chatId, text);
-  }
-}
-
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   await ensureUser(chatId);
 
   await bot.sendMessage(chatId, "Я Сардор. Пиши нормально, без церемоний. Разберемся.");
-});
-
-bot.onText(/\/voice_on/, async (msg) => {
-  await ensureUser(msg.chat.id);
-  await db.query("UPDATE users SET voice_enabled = true WHERE chat_id = $1", [msg.chat.id]);
-  await bot.sendMessage(msg.chat.id, "Голос включил.");
-});
-
-bot.onText(/\/voice_off/, async (msg) => {
-  await ensureUser(msg.chat.id);
-  await db.query("UPDATE users SET voice_enabled = false WHERE chat_id = $1", [msg.chat.id]);
-  await bot.sendMessage(msg.chat.id, "Голос выключил.");
 });
 
 bot.onText(/\/proactive_on/, async (msg) => {
@@ -207,6 +165,26 @@ bot.onText(/\/reset/, async (msg) => {
   await bot.sendMessage(msg.chat.id, "Краткую память очистил.");
 });
 
+bot.onText(/\/napishi (\\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const seconds = Number(match[1]);
+
+  if (!seconds || seconds < 1) {
+    await bot.sendMessage(chatId, "Напиши нормально. Например: /napishi 10");
+    return;
+  }
+
+  await bot.sendMessage(chatId, `Хорошо. Напишу через ${seconds} секунд.`);
+
+  setTimeout(async () => {
+    await bot.sendMessage(chatId, "Что делаешь?");
+
+    setTimeout(async () => {
+      await bot.sendMessage(chatId, "Давай поболтаем.");
+    }, 2000);
+  }, seconds * 1000);
+});
+
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -219,13 +197,13 @@ bot.on("message", async (msg) => {
   saveShortMemory(chatId, "user", text);
 
   try {
-    await bot.sendChatAction(chatId, "record_voice");
+    await bot.sendChatAction(chatId, "typing");
 
     const reply = await askSardor(chatId);
 
     saveShortMemory(chatId, "assistant", reply);
 
-    await sendSardorReply(chatId, reply);
+    await bot.sendMessage(chatId, reply);
   } catch (error) {
     console.error(error);
     await bot.sendMessage(chatId, "Сейчас не отвечу. Что-то легло на стороне модели.");
@@ -289,4 +267,4 @@ async function sendProactiveMessages() {
 
 setInterval(sendProactiveMessages, 60 * 60 * 1000);
 
-console.log("Сардор с голосом и инициативой запущен");
+console.log("Сардор запущен без голосовых");

@@ -47,8 +47,15 @@ bot.on("message", async (msg) => {
     });
 
     const data = await response.json();
+    console.log(JSON.stringify(data, null, 2));
 
-    const reply = data.choices?.[0]?.message?.content || "Я завис на секунду 😅 Напиши еще раз.";
+    if (!response.ok) {
+  console.log(data);
+  await bot.sendMessage(chatId, `Ошибка OpenRouter:\n${JSON.stringify(data)}`);
+  return;
+}
+
+const reply = data.choices[0].message.content;
 
     memory[chatId].push({ role: "assistant", content: reply });
 

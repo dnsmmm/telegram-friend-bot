@@ -35,7 +35,7 @@ bot.on("message", async (msg) => {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "deepseek/deepseek-chat-v3:free",
+        model: "openai/gpt-oss-120b:free",
         messages: [
           {
             role: "system",

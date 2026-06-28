@@ -432,6 +432,37 @@ bot.onText(/\/очистить/, async (msg) => {
   await bot.sendMessage(msg.chat.id, "Краткую память очистил.");
 });
 
+bot.onText(/\/напиши (\d+)(?:\s+\/повтори\s+([\s\S]+))?/, async (msg, match) => {
+  const seconds = Number(match[1]);
+  const repeatText = match[2]?.trim();
+
+  if (!seconds || seconds < 1) {
+    await bot.sendMessage(msg.chat.id, "Напиши нормально. Например: /напиши 10 /повтори Что делаешь?");
+    return;
+  }
+
+  await bot.sendMessage(msg.chat.id, `Хорошо. Напишу через ${seconds} секунд.`);
+
+  setTimeout(async () => {
+    if (repeatText) {
+      await bot.sendMessage(msg.chat.id, repeatText, {
+        disable_notification: false
+      });
+      return;
+    }
+
+    await bot.sendMessage(msg.chat.id, "Что делаешь?", {
+      disable_notification: false
+    });
+
+    setTimeout(async () => {
+      await bot.sendMessage(msg.chat.id, "Давай поболтаем.", {
+        disable_notification: false
+      });
+    }, 2000);
+  }, seconds * 1000);
+});
+
 bot.onText(/\/повтори ([\s\S]+)/, async (msg, match) => {
   const text = match[1]?.trim();
 

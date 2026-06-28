@@ -123,7 +123,6 @@ ${facts || "Пока пусто."}`
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   await ensureUser(chatId);
-
   await bot.sendMessage(chatId, "Я Сардор. Пиши нормально, без церемоний. Разберемся.");
 });
 
@@ -141,23 +140,14 @@ bot.onText(/\/proactive_off/, async (msg) => {
 
 bot.onText(/\/remember (.+)/, async (msg, match) => {
   await ensureUser(msg.chat.id);
-
-  await db.query(
-    "INSERT INTO memories (chat_id, fact) VALUES ($1, $2)",
-    [msg.chat.id, match[1]]
-  );
-
+  await db.query("INSERT INTO memories (chat_id, fact) VALUES ($1, $2)", [msg.chat.id, match[1]]);
   await bot.sendMessage(msg.chat.id, "Запомнил.");
 });
 
 bot.onText(/\/memory/, async (msg) => {
   await ensureUser(msg.chat.id);
   const facts = await getFacts(msg.chat.id);
-
-  await bot.sendMessage(
-    msg.chat.id,
-    facts ? `Вот что помню:\n${facts}` : "Пока ничего не помню."
-  );
+  await bot.sendMessage(msg.chat.id, facts ? `Вот что помню:\n${facts}` : "Пока ничего не помню.");
 });
 
 bot.onText(/\/reset/, async (msg) => {
@@ -165,7 +155,7 @@ bot.onText(/\/reset/, async (msg) => {
   await bot.sendMessage(msg.chat.id, "Краткую память очистил.");
 });
 
-bot.onText(/\/napishi (\\d+)/, async (msg, match) => {
+bot.onText(/\/napishi (\d+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const seconds = Number(match[1]);
 

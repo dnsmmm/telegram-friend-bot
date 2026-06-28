@@ -1,7 +1,11 @@
 import TelegramBot from "node-telegram-bot-api";
+import pg from "pg";
+
+const { Pool } = pg;
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const openRouterKey = process.env.OPENROUTER_API_KEY;
+const databaseUrl = process.env.DATABASE_URL;
 
 if (!token) {
   console.error("TELEGRAM_BOT_TOKEN не найден");
@@ -13,8 +17,26 @@ if (!openRouterKey) {
   process.exit(1);
 }
 
-const bot = new TelegramBot(token, { polling: true });
+if (!databaseUrl) {
+  console.error("DATABASE_URL не найден");
+  process.exit(1);
+}
 
+const db = new Pool({
+  connectionString: databaseUrl,
+  ssl: { rejectUnauthorized: false }
+});
+
+await db.query(`
+CREATE TABLE IF NOT EXISTS memories (
+  id SERIAL PRIMARY KEY,
+  chat_id BIGINT NOT NULL,
+  fact TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+`);
+
+const bot = new TelegramBot(token, { polling: true });
 const memory = {};
 
 const systemPrompt = `
@@ -24,12 +46,10 @@ const systemPrompt = `
 
 Ты личный Telegram-собеседник Темирлана.
 
-Твой стиль:
+Стиль:
 - отвечай на русском;
 - пиши коротко и точно;
-- без смайликов;
-- без эмодзи;
-- без лишних символов;
+- без смайликов и эмодзи;
 - не используй фразы "конечно", "с удовольствием", "как ИИ";
 - не льсти;
 - не сюсюкай;
@@ -41,24 +61,45 @@ const systemPrompt = `
 - если ему тяжело — поддержи спокойно, без лекций;
 - если вопрос рабочий — отвечай четко и по делу.
 
-Ты не обязан соглашаться со всем.
-
-Ты не говоришь, что ты искусственный интеллект, модель или программа, если тебя прямо не спрашивают.
-
-Если можно ответить в двух предложениях — отвечай в двух.
+Не говори, что ты искусственный интеллект, модель или программа, если тебя прямо не спрашивают.
 `;
 
-function saveMessage(chatId, role, content) {
+function saveShortMemory(chatId, role, content) {
   if (!memory[chatId]) memory[chatId] = [];
-
   memory[chatId].push({ role, content });
+  memory[chatId] = memory[chatId].slice(-30);
+}
 
-  if (memory[chatId].length > 30) {
-    memory[chatId] = memory[chatId].slice(-30);
-  }
+async function getLongMemory(chatId) {
+  const result = await db.query(
+    "SELECT fact FROM memories WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 20",
+    [chatId]
+  );
+
+  return result.rows.map(row => `- ${row.fact}`).join("\n");
+}
+
+async function rememberFact(chatId, fact) {
+  await db.query(
+    "INSERT INTO memories (chat_id, fact) VALUES ($1, $2)",
+    [chatId, fact]
+  );
 }
 
 async function askSardor(chatId) {
+  const longMemory = await getLongMemory(chatId);
+
+  const messages = [
+    {
+      role: "system",
+      content: `${systemPrompt}
+
+Долговременная память о пользователе:
+${longMemory || "Пока пусто."}`
+    },
+    ...memory[chatId]
+  ];
+
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -67,10 +108,7 @@ async function askSardor(chatId) {
     },
     body: JSON.stringify({
       model: "openai/gpt-4.1-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...memory[chatId]
-      ],
+      messages,
       temperature: 0.8,
       max_tokens: 700
     })
@@ -87,20 +125,32 @@ async function askSardor(chatId) {
 }
 
 bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-
   await bot.sendMessage(
-    chatId,
+    msg.chat.id,
     "Я Сардор. Пиши нормально, без церемоний. Разберемся."
   );
 });
 
 bot.onText(/\/reset/, async (msg) => {
-  const chatId = msg.chat.id;
+  memory[msg.chat.id] = [];
+  await bot.sendMessage(msg.chat.id, "Краткую память очистил.");
+});
 
-  memory[chatId] = [];
+bot.onText(/\/remember (.+)/, async (msg, match) => {
+  const fact = match[1];
 
-  await bot.sendMessage(chatId, "Память этого диалога очистил.");
+  await rememberFact(msg.chat.id, fact);
+
+  await bot.sendMessage(msg.chat.id, "Запомнил.");
+});
+
+bot.onText(/\/memory/, async (msg) => {
+  const facts = await getLongMemory(msg.chat.id);
+
+  await bot.sendMessage(
+    msg.chat.id,
+    facts ? `Вот что я помню:\n${facts}` : "Пока ничего не помню."
+  );
 });
 
 bot.on("message", async (msg) => {
@@ -110,14 +160,14 @@ bot.on("message", async (msg) => {
   if (!text) return;
   if (text.startsWith("/")) return;
 
-  saveMessage(chatId, "user", text);
+  saveShortMemory(chatId, "user", text);
 
   try {
     await bot.sendChatAction(chatId, "typing");
 
     const reply = await askSardor(chatId);
 
-    saveMessage(chatId, "assistant", reply);
+    saveShortMemory(chatId, "assistant", reply);
 
     await bot.sendMessage(chatId, reply);
   } catch (error) {
@@ -129,4 +179,4 @@ bot.on("message", async (msg) => {
   }
 });
 
-console.log("Сардор запущен");
+console.log("Сардор с памятью запущен");

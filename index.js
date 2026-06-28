@@ -1,20 +1,19 @@
 import TelegramBot from "node-telegram-bot-api";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const openRouterKey = process.env.OPENROUTER_API_KEY;
+const geminiKey = process.env.GEMINI_API_KEY;
 
 if (!token) {
   console.error("❌ TELEGRAM_BOT_TOKEN не найден");
   process.exit(1);
 }
 
-if (!openRouterKey) {
-  console.error("❌ OPENROUTER_API_KEY не найден");
+if (!geminiKey) {
+  console.error("❌ GEMINI_API_KEY не найден");
   process.exit(1);
 }
 
 const bot = new TelegramBot(token, { polling: true });
-
 const memory = {};
 
 bot.on("message", async (msg) => {
@@ -28,34 +27,44 @@ bot.on("message", async (msg) => {
   memory[chatId].push({ role: "user", content: text });
 
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${openRouterKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-oss-120b:free",
-        messages: [
-          {
-            role: "system",
-            content: "Ты дружелюбный Telegram-собеседник. Общайся тепло, живо, просто, как хороший друг. Не будь занудным. Отвечай на русском, коротко и по-человечески."
-          },
-          ...memory[chatId].slice(-10)
-        ]
-      })
-    });
+    await bot.sendChatAction(chatId, "typing");
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text:
+                    "Ты дружелюбный Telegram-собеседник. Общайся тепло, живо, просто, как хороший друг. Отвечай на русском, коротко и по-человечески.\n\n" +
+                    memory[chatId]
+                      .slice(-10)
+                      .map(m => `${m.role === "user" ? "Пользователь" : "Бот"}: ${m.content}`)
+                      .join("\n")
+                }
+              ]
+            }
+          ]
+        })
+      }
+    );
 
     const data = await response.json();
-    console.log(JSON.stringify(data, null, 2));
 
     if (!response.ok) {
-  console.log(data);
-  await bot.sendMessage(chatId, `Ошибка OpenRouter:\n${JSON.stringify(data)}`);
-  return;
-}
+      console.log(data);
+      await bot.sendMessage(chatId, `Ошибка Gemini:\n${JSON.stringify(data)}`);
+      return;
+    }
 
-const reply = data.choices[0].message.content;
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "Я подвис 😅 Напиши еще раз.";
 
     memory[chatId].push({ role: "assistant", content: reply });
 
@@ -66,4 +75,4 @@ const reply = data.choices[0].message.content;
   }
 });
 
-console.log("🤖 ИИ-бот запущен");
+console.log("🤖 Gemini-бот запущен");

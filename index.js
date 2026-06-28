@@ -12,8 +12,7 @@ if (!token) {
 const bot = new TelegramBot(token, { polling: true });
 const memory = {};
 
-const systemPrompt =
-  "Ты дружелюбный Telegram-собеседник. Общайся тепло, живо, просто, как хороший друг. Отвечай на русском, коротко и по-человечески. Не будь занудным.";
+import { systemPrompt } from "./ai/prompts.js";
 
 function getHistory(chatId) {
   return memory[chatId]
